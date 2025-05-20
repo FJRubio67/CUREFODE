@@ -12,8 +12,10 @@ flogis <- function(t, y, par) {
 
   
   # model equations
-  dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)
+ # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
   
+  dCH0 <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
+  dCH <- ifelse(dCH0 > 0, dCH0, 0)
   
   # result
   return( list(c(dCH)) )
