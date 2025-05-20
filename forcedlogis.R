@@ -11,7 +11,7 @@ flogis <- function(t, y, par) {
 
   
   # model equations
-  dCH <-  lambda*CH*(1 - CH/kappa) + eps
+  dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)
 
   
   # result
