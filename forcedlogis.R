@@ -1,4 +1,4 @@
-
+rm(list = ls())
 # Forced logistic ODE
 flogis <- function(t, y, par) {
   # state variables
