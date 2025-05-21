@@ -20,7 +20,7 @@ status <- as.logical(e1684$FAILCENS)
 
 log_likFL(c(0,0,-1))
 
-OPT = nlminb(c(0,25,-1), log_likFL, control = list(iter.max = 10000))
+OPT = nlminb(c(-2,1,-1), log_likFL, control = list(iter.max = 10000))
 
       
 tvec = seq(0,10,by = 0.01)
