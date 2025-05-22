@@ -3,28 +3,29 @@ rm(list=ls())
 library(smcure)
 library(deSolve)
 library(HazReg)
+library(curesurv)
 
 source("routinesC.R")
 
-data(e1684)
+data(pancreas_data)
 
 # Kaplan-Meier estimator for the survival times
-km <- survfit(Surv(e1684$FAILTIME,e1684$FAILCENS) ~ 1)
+km <- survfit(Surv(pancreas_data$time_obs,pancreas_data$event) ~ 1)
 
 plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
      ylim = c(0,1), xlab = "Time", ylab = "Survival")
 
 
-survtimes <- as.vector(sort(e1684$FAILTIME))
-status <- as.logical(e1684$FAILCENS)
+survtimes <- as.vector(sort(pancreas_data$time_obs))
+status <- as.logical(pancreas_data$event)
 
 
 log_likFL(c(0,0,-1))
 
 OPT = nlminb(c(0,0,-1), log_likFL, control = list(iter.max = 10000))
 
-      
-tvec = seq(0,10,by = 0.01)
+
+tvec = seq(0,15,by = 0.01)
 
 
 params  <- c(lambda = exp(OPT$par[1]), kappa = exp(OPT$par[2]), eps = exp(OPT$par[3]))
@@ -67,8 +68,8 @@ fspgw <- Vectorize(function(t) exp(-chpgw(t,exp(OPTPGW$OPT$par[1]),exp(OPTPGW$OP
 
 plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
      ylim = c(0,1), xlab = "Time", ylab = "Survival")
-curve(fspgw,0,10, add = T, lwd = 2, ylim = c(0,1),
-       col = "blue")
+curve(fspgw,0,15, add = T, lwd = 2, ylim = c(0,1),
+      col = "blue")
 
 curve(tempf1,-2,-1)
 

@@ -8,7 +8,7 @@ lambda0 = 5
 kappa0 = 1
 eps0 = 0.01
 
-tvec = seq(0,5,by = 0.01)
+tvec = seq(0,10,by = 0.01)
 
 
   params  <- c(lambda = lambda0, kappa = kappa0, eps = eps0)
@@ -32,4 +32,6 @@ tvec = seq(0,5,by = 0.01)
 
   
   plot(tvec,h_values, type = "l", lwd = 2, ylim = c(0,1.5))
+  
+  min(h_values)
   
