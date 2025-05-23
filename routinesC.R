@@ -14,12 +14,102 @@ flogis <- function(t, y, par) {
   # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
   
   dCH0 <-  lambda*CH*(1 - CH/kappa) + eps*exp(-2*t)
-  dCH <- ifelse(dCH0 > 0, dCH0, 1e-12)
+  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-2*t)))
   
   # result
   return( list(c(dCH)) )
   
 }
+
+
+# Forced Gompertz ODE
+fgomp <- function(t, y, par) {
+  # state variables
+  CH <- y[1]
+  
+  
+  # parameters
+  lambda <- par[1]
+  kappa <- par[2]
+  eps <- par[3]
+  
+  
+  # model equations
+  # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
+  
+  dCH0 <-  lambda*CH*log(kappa/(CH+eps*exp(-2*t))) + eps*exp(-2*t)
+  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-2*t)))
+  
+  # result
+  return( list(c(dCH)) )
+  
+}
+
+
+# Forced Richards ODE
+frich <- function(t, y, par) {
+  # state variables
+  CH <- y[1]
+  
+  
+  # parameters
+  lambda <- par[1]
+  kappa <- par[2]
+  beta <- par[3]
+  eps <- par[4]
+  
+  # model equations
+  # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
+  
+  dCH0 <-  lambda*CH*(1 - (CH/kappa)^beta) + eps*exp(-3*t)
+  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-3*t)))
+  
+  # result
+  return( list(c(dCH)) )
+  
+}
+
+
+# Function to extract H'(t) after solving the ODE
+get_derivatives <- function(times, y, func, parms) {
+  n <- length(times)
+  derivs <- numeric(n)
+  
+  for (i in 1:n) {
+    # Calculate derivative at each time point
+    derivs[i] <- unlist(func(times[i], y[i], parms))
+  }
+  
+  return(derivs)
+}
+
+
+
+
+# Forced SAS ODE (in progress)
+fsas <- function(t, y, par) {
+  # state variables
+  CH <- y[1]
+  
+  
+  # parameters
+  lambda <- par[1]
+  kappa <- par[2]
+  delta <- par[3]
+  eps <- par[4]
+  
+  # model equations
+  # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
+  cons = sinh(delta*asinh(1))
+  
+  dCH0 <-  lambda*CH*(1 - sinh(delta*asinh(CH/kappa))/cons ) + eps*exp(-3*t)
+  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-3*t)))
+  
+  # result
+  return( list(c(dCH)) )
+  
+}
+
 
 # Function to extract H'(t) after solving the ODE
 get_derivatives <- function(times, y, func, parms) {
