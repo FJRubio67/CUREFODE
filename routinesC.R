@@ -13,8 +13,10 @@ flogis <- function(t, y, par) {
   # model equations
   # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
   
-  dCH0 <-  lambda*CH*(1 - CH/kappa) + eps*exp(-2*t)
-  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-2*t)))
+  force = eps*exp(-2*t)
+  
+  dCH0 <-  lambda*CH*(1 - CH/kappa) + force
+  dCH <- as.numeric(ifelse(dCH0 > force, dCH0, force))
   
   # result
   return( list(c(dCH)) )
@@ -37,8 +39,10 @@ fgomp <- function(t, y, par) {
   # model equations
   # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
   
-  dCH0 <-  lambda*CH*log(kappa/(CH+eps*exp(-2*t))) + eps*exp(-2*t)
-  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-2*t)))
+  force = eps*exp(-2*t)
+  
+  dCH0 <-  lambda*CH*log(kappa/(CH+eps*exp(-2*t))) + force
+  dCH <- as.numeric(ifelse(dCH0 > force, dCH0, force))
   
   # result
   return( list(c(dCH)) )
@@ -61,8 +65,10 @@ frich <- function(t, y, par) {
   # model equations
   # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
   
-  dCH0 <-  lambda*CH*(1 - (CH/kappa)^beta) + eps*exp(-3*t)
-  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-3*t)))
+  force = eps*exp(-3*t)
+  
+  dCH0 <-  lambda*CH*(1 - (CH/kappa)^beta) + force
+  dCH <- as.numeric(ifelse(dCH0 > force, dCH0, force))
   
   # result
   return( list(c(dCH)) )
@@ -102,8 +108,10 @@ fsas <- function(t, y, par) {
   # dCH <-  lambda*CH*(1 - CH/kappa) + eps/(1+t)^2
   cons = sinh(delta*asinh(1))
   
-  dCH0 <-  lambda*CH*(1 - sinh(delta*asinh(CH/kappa))/cons ) + eps*exp(-3*t)
-  dCH <- as.numeric(ifelse(dCH0 > 0, dCH0, eps*exp(-3*t)))
+  force = eps*exp(-3*t)
+  
+  dCH0 <-  lambda*CH*(1 - sinh(delta*asinh(CH/kappa))/cons ) + force
+  dCH <- as.numeric(ifelse(dCH0 > force, dCH0, force))
   
   # result
   return( list(c(dCH)) )
