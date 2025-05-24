@@ -68,7 +68,7 @@ fspgw <- Vectorize(function(t) exp(-chpgw(t,exp(OPTPGW$OPT$par[1]),exp(OPTPGW$OP
 plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
      ylim = c(0,1), xlab = "Time", ylab = "Survival")
 curve(fspgw,0,10, add = T, lwd = 2, ylim = c(0,1),
-       col = "blue")
+       col = "red")
 
 curve(tempf1,-2,-1)
 
