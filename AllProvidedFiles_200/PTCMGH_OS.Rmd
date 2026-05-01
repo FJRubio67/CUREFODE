@@ -1,0 +1,374 @@
+---
+title: "`PTCMGH`: Overall Survival Analysis"
+author: '[Francisco Javier Rubio](https://sites.google.com/site/fjavierrubio67/)'
+#date: "`r format(Sys.Date(), "%B %d, %Y")`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+
+CALGB 40101 (NCT00041119) is a Phase III trial finding that 4 cycles of chemotherapy are non-inferior to 6 cycles for early-stage breast cancer (0-3 positive nodes).
+
+
+The following R code illustrates how to analyse overall survival in this data set using the `PTCMGH` R package.
+
+
+# Data preparation
+
+```{r}
+
+rm(list=ls())
+
+#library(devtools)
+#install_github("FJRubio67/HazReg")
+library(HazReg)
+#library(devtools)
+#install_github("FJRubio67/PTCMGH")
+library(PTCMGH)
+library(survival)
+library(knitr)
+library(haven)
+library(dplyr)
+
+# Read the raw data set
+df <- read_sas("all_finalb.sas7bdat")
+head(df)
+
+# Data
+df_raw <- read_sas("all_finalb.sas7bdat")
+
+df <- df_raw %>%
+  # Restrict to eligible patients only
+  filter(elig == 2) %>%
+  mutate(
+    # --- Outcome variables ---
+    os_time   = survmos,
+    os_event  = survstat,       # 0=alive, 1=dead  
+    dfs_time  = dfsmos,
+    dfs_event = dfsstat,        # 0=no event, 1=event  
+    
+    # --- Treatment (primary exposures) ---
+    agent  = factor(agent,  levels = c(0,1), labels = c("CA", "T")),
+    length = factor(length, levels = c(0,1), labels = c("4 cycles", "6 cycles")),
+    
+    # --- Stratification / baseline covariates ---
+    menopause = factor(stra1, levels = c(1,2), labels = c("Pre", "Post")),
+    receptor  = factor(stra2, levels = c(1,2), labels = c("Pos/Unk", "Neg")),
+    her2      = factor(stra3, levels = c(1,2,3), labels = c("Positive","Negative","Unknown")),
+    
+    # --- Tumour characteristics ---
+    er_status   = factor(OH003, levels = c(1,2), labels = c("Negative","Positive")),
+    pgr_status  = factor(OH004, levels = c(1,2), labels = c("Negative","Positive")),
+    grade       = factor(OH005, levels = c(1,2,3), labels = c("Low","Intermediate","High")),
+    tumor_size  = factor(tsize, levels = c(1,2,3), labels = c("<2cm","2-5cm",">5cm")),
+    num_pos_nodes = num_pos_nodes,   # keep as-is or convert to numeric (note ">3" category)
+    
+    # --- Demographics ---
+    age_cat = factor(agecat, levels = 1:6,
+                     labels = c("20-29","30-39","40-49","50-59","60-69","70+")),
+    race    = factor(RACE_ID, levels = c(1,3,4,5,99),
+                     labels = c("White","Black","Asian","Other","Unknown")),
+    ethnicity = factor(ETHNIC_ID, levels = c(1,2,9),
+                       labels = c("Hispanic","Non-Hispanic","Unknown")),
+    
+    # --- Surgery / staging ---
+    surgery_type = factor(OH028, levels = c(1,2), labels = c("Lumpectomy","Mastectomy")),
+    sentinel_bx  = factor(OH032, levels = c(1,2), labels = c("No","Yes")),
+    axillary_diss = factor(OH037, levels = c(1,2), labels = c("No","Yes")),
+    
+    # --- Amendment (important! 6-cycle arms were later closed) ---
+    preamend = factor(preamend, levels = c(0,1), labels = c("Post-amend","Pre-amend"))
+  )
+
+dim(df)
+
+
+
+# Complete cases for variables of interest
+dfc <- data.frame(agent = df$agent, length = df$length, menopause = df$menopause,
+                  receptor = df$receptor, tumor_size = df$tumor_size, grade = df$grade,
+                  num_pos_nodes = as.numeric(df$num_pos_nodes), age_cat = df$age_cat,
+                  indrx = df$indrx, her2 = df$her2,
+                  os_time = df$os_time/12, os_event = df$os_event)
+
+dfc <- dfc[complete.cases(dfc),]
+dim(dfc)
+
+
+# Build the design matrix from the Cox model formula
+des0 <- model.matrix(
+  ~ factor(agent) + factor(length) + factor(menopause) +
+    factor(receptor) + factor(her2) + factor(tumor_size) +
+    factor(grade),
+  data = dfc
+)
+
+# View the first few rows
+head(des0)
+dim(des0)
+nc <- nrow(dfc)
+
+
+# Survival times
+times <- dfc$os_time
+# Status
+status <- dfc$os_event
+
+# Kaplan-Meier estimator for the overall survival times
+km <- survfit(Surv(times, status) ~ 1)
+plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+
+
+# Kaplan-Meier estimator for the overall survival times: T (0) vs CA (1)
+ind_t <- which(dfc$agent == "T")
+ind_ca <- which(dfc$agent == "CA")
+
+km_t <- survfit(Surv(times[ind_t], status[ind_t]) ~ 1)
+km_ca <- survfit(Surv(times[ind_ca], status[ind_ca]) ~ 1)
+
+plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+points(km_t$time, km_t$surv, type = "l", col = "red", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+points(km_ca$time, km_ca$surv, type = "l", col = "green", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+legend("bottomright", legend = c("Population","T","CA"), col = c("black","red","green"), 
+       lwd = c(2,2,2))
+```
+
+# Model fit
+
+## Baseline
+
+```{r}
+
+# Model fitting
+OPT <- PTCMMLE(init = c(0,0,0),
+                    times = times,
+                    status = status,
+                    hstr = "baseline",
+                    dist = "LogNormal",
+                    des_theta = NULL,
+                    des_t = NULL,
+                    des_h = NULL,
+                    des = NULL,
+                    method = "nlminb", 
+                    maxit = 10000) 
+
+# MLE
+MLE <- c(OPT$OPT$par[1],exp(OPT$OPT$par[2]),exp(OPT$OPT$par[3]))
+
+# Fitted survival function 
+spt <- Vectorize(function(t) exp(- MLE[3]*(1-exp(-chlnorm(t,MLE[1],MLE[2])))) )
+
+plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+curve(spt,0,10.5, col = "red", add= T) 
+legend("bottomright", legend = c("KM","Baseline"), col = c("black","red"), 
+       lwd = c(2,2))
+```
+
+## PH 
+
+```{r}
+# Model fitting
+OPT_PH <- PTCMMLE(init = rep(0,2*ncol(des0)+1),
+               times = times,
+               status = status,
+               hstr = "PH",
+               dist = "LogNormal",
+               des_theta = des0,
+               des_t = NULL,
+               des_h = NULL,
+               des = des0[,-1],
+               method = "nlminb", 
+               maxit = 10000) 
+
+# MLE
+MLE_PH <- c(OPT_PH$OPT$par[1],exp(OPT_PH$OPT$par[2]),OPT_PH$OPT$par[-c(1:2)])
+
+# Population survival function 
+spt_ph <- Vectorize(function(t){
+  
+  theta_i <- as.vector(exp(des0 %*% MLE_PH[3:(2+ncol(des0))]))
+  F_i <- 1 - exp(-chlnorm(t,MLE_PH[1],MLE_PH[2])*exp(des0[,-1]%*%MLE_PH[(3+ncol(des0)):(2*ncol(des0)+1)]))
+  survs <- exp(-theta_i*F_i)
+  return(mean(survs))
+  }) 
+
+plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+curve(spt_ph,0,10.5, col = "red", add= T)  
+legend("bottomright", legend = c("KM","PH"), col = c("black","red"), 
+       lwd = c(2,2))
+```
+
+## AFT 
+
+
+```{r}
+# Model fitting
+OPT_AFT <- PTCMMLE(init = rep(0,2*ncol(des0)-1+2),
+                  times = times,
+                  status = status,
+                  hstr = "AFT",
+                  dist = "LogNormal",
+                  des_theta = des0,
+                  des_t = NULL,
+                  des_h = NULL,
+                  des = des0[,-1],
+                  method = "nlminb", 
+                  maxit = 10000) 
+
+# MLE
+MLE_AFT <- c(OPT_AFT$OPT$par[1],exp(OPT_AFT$OPT$par[2]),OPT_AFT$OPT$par[-c(1:2)])
+
+# Population survival function
+spt_aft <- Vectorize(function(t){
+  
+  theta_i <- as.vector(exp(des0 %*% MLE_AFT[3:(2+ncol(des0))]))
+  F_i <- 1 - exp(-chlnorm(as.vector(t*exp(des0[,-1]%*%MLE_AFT[(3+ncol(des0)):(2*ncol(des0)+1)])),MLE_AFT[1],MLE_AFT[2]))
+  survs <- exp(-theta_i*F_i)
+  return(mean(survs))
+}) 
+
+
+plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+curve(spt_aft,0,10.5, col = "red", add= T)  
+legend("bottomright", legend = c("KM","AFT"), col = c("black","red"), 
+       lwd = c(2,2))
+```
+
+
+## General Hazards
+
+```{r}
+# Model fitting
+OPT_GH <- PTCMMLE(init = rep(0,3*ncol(des0)),
+                   times = times,
+                   status = status,
+                   hstr = "GH",
+                   dist = "LogNormal",
+                   des_theta = des0,
+                   des_t = des0[,-1],
+                   des_h = des0[,-1],
+                   des = NULL,
+                   method = "nlminb", 
+                   maxit = 10000) 
+
+# MLE
+MLE_GH <- c(OPT_GH$OPT$par[1],exp(OPT_GH$OPT$par[2]),OPT_GH$OPT$par[-c(1:2)])
+
+
+# Population survival function
+spt_gh <- Vectorize(function(t){
+  
+  theta_i <- as.vector(exp(des0 %*% MLE_GH[3:(2+ncol(des0))]))
+  F_i <- 1 - exp(-chlnorm(as.vector(t*as.vector(exp(des0[,-1]%*%MLE_GH[(3+ncol(des0)):(2*ncol(des0)+1)]))),MLE_GH[1],MLE_GH[2])*
+                   as.vector(exp(des0[,-1]%*%MLE_GH[(2*ncol(des0)+2):(3*ncol(des0))] - des0[,-1]%*%MLE_GH[(3+ncol(des0)):(2*ncol(des0)+1)])))
+  survs <- exp(-theta_i*F_i)
+  return(mean(survs))
+}) 
+
+plot(km$time, km$surv, type = "l", col = "black", lwd = 2, lty = 1, 
+     ylim = c(0,1), xlab = "Time", ylab = "Survival")
+curve(spt_gh,0,10.5, col = "red", add= T)  
+legend("bottomright", legend = c("KM","GH"), col = c("black","red"), 
+       lwd = c(2,2))
+```
+
+## Model comparison
+
+```{r}
+# Akaike information criterion
+AIC <- 2*OPT$OPT$objective + 2*length(OPT$OPT$par)
+AIC_PH <- 2*OPT_PH$OPT$objective + 2*length(OPT_PH$OPT$par)
+AIC_AFT <- 2*OPT_AFT$OPT$objective + 2*length(OPT_AFT$OPT$par)
+AIC_GH <- 2*OPT_GH$OPT$objective + 2*length(OPT_GH$OPT$par)
+
+# AICs: baseline, PH, AFT, AH, GH
+AICs <- c(AIC, AIC_PH, AIC_AFT, AIC_GH)
+
+AICs
+
+which.min(AICs)
+
+```
+
+# Estimands: PH model
+
+## Incidence
+
+### Difference in cure probabilities
+
+```{r}
+# x: covariate values
+# index: index of x corresponding to treatment (agent in this case)
+diff_CP <- function(x, index){
+  x0 <- as.matrix(x) 
+  x0[,index] = 0
+  x1 <- as.matrix(x)
+  x1[,index] = 1
+  theta_i0 <- as.vector(exp(x0 %*% MLE_PH[3:(2+ncol(x0))]))
+  theta_i1 <- as.vector(exp(x1 %*% MLE_PH[3:(2+ncol(x1))]))
+  
+  dif_theta <- exp(-theta_i1) - exp(-theta_i0)
+  return(as.vector(dif_theta))
+}
+
+DCP0 <- diff_CP(des0,2)
+
+hist(DCP0, main = "Difference in cure probabilities",
+     xlab = "DCP", probability = TRUE)
+
+plot(sort(DCP0), main = "Difference in cure probabilities")
+
+# Average treatment effect (ATE): Cure probabilities
+ATE_CP <- mean(DCP0)
+ATE_CP
+
+summary(DCP0)
+```
+
+## Difference in latent failure distributions
+
+```{r}
+# x: covariate values
+# index: index of x corresponding to treatment (agent in this case)
+diff_LFD <- function(t, x, index){
+  x0 <- as.matrix(x) 
+  x0[,index] = 0
+  x1 <- as.matrix(x)
+  x1[,index] = 1
+  F_i0 <- 1 - exp(-chlnorm(t,MLE_PH[1],MLE_PH[2])*exp(x0[,-1]%*%MLE_PH[(3+ncol(x0)):(2*ncol(x0)+1)]))
+  F_i1 <- 1 - exp(-chlnorm(t,MLE_PH[1],MLE_PH[2])*exp(x1[,-1]%*%MLE_PH[(3+ncol(x1)):(2*ncol(x1)+1)]))
+  
+  dif_lfd <- F_i1 - F_i0
+  return(as.vector(dif_lfd))
+}
+
+ts <- seq(0,10.5, by = 0.05)
+
+DLFD0 <- matrix(0, nrow = nc, ncol = length(ts))
+for(i in 1:length(ts)) DLFD0[,i] <- diff_LFD(ts[i], des0, 2)
+
+# Average treatment effect (ATE): latent failure distributions
+plot(colMeans(DLFD0), main = "Difference in latent failure distributions",
+     xlab = "time", ylab = "DLFD")
+
+```
+
+
+# References
