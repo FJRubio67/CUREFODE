@@ -14,53 +14,6 @@ function key2matrix(key)
     return out
 end
 
-# Ratio of exponentials for large values of the argument
-# exp(x)/[ exp(x) + exp(y) ]
-function exp_ratio(x, y)
-    max_log = max(x, y)
-    exp_shifted_x = exp(x - max_log)
-    exp_shifted_y = exp(y - max_log)
-    return exp_shifted_x / (exp_shifted_x + exp_shifted_y)
-end
-
-# Weighted ratio of exponentials for large values of the argument
-# wx*exp(x)/[ wx*exp(x) + wy*exp(y) ]
-function wexp_ratio(x, y, wx, wy)
-    max_log = max(x, y)
-    exp_shifted_x = exp(x - max_log)
-    exp_shifted_y = exp(y - max_log)
-    return exp_shifted_x * wx / (exp_shifted_x * wx + exp_shifted_y * wy)
-end
-
-
-
-# Function to plot histograms of the columns of a matrix
-function plot_histograms_by_column(data)
-    num_cols = size(data, 2)
-    plots = []
-
-    for i in 1:num_cols
-        hist = histogram(data[:, i], title="Parameter $i", legend=false)
-        push!(plots, hist)
-    end
-
-    plot(plots..., layout=(num_cols, 1), size=(800, 300 * num_cols))
-end
-
-
-# Function to create traceplots of the columns of a matrix
-function plot_traceplots_by_column(data)
-    num_cols = size(data, 2)
-    plots = []
-
-    for i in 1:num_cols
-        hist = plot(data[:, i], title="Parameter $i", legend=false)
-        push!(plots, hist)
-    end
-
-    plot(plots..., layout=(num_cols, 1), size=(800, 300 * num_cols))
-end
-
 #=
 ****************************************************************************
 ****************************************************************************
@@ -161,6 +114,128 @@ Functions: no covariates
 
 
 # Negative log likelihood function: original formulation (h and q)
+function mlog_lik0(par::Vector{Float64}, times::Vector{Float64}, status::AbstractVector{Bool}, hp::Vector{Float64}, u0::Vector{Float64})
+    # Parameters for the ODE
+    odeparams = exp.(par)
+    tmax = maximum(times)
+
+    sol = solve(ODEProblem(HRJ, u0, [0.0, tmax], odeparams); alg_hints=[:stiff])
+    OUT = sol(times)
+
+    # h_E(t_i | θ) for all i, and for uncensored only
+    hE_all  = OUT[1, :]          # length n
+    HE_all  = OUT[3, :]          # length n  (cumulative hazard)
+
+    # log(hp_i + h_E_i) via logsumexp for numerical stability
+    # logsumexp([a, b]) = log(exp(a) + exp(b))
+    ll_haz = sum(
+        logsumexp(log(hp[i]), log(hE_all[i]))
+        for i in eachindex(times) if status[i]
+    )
+
+    ll_chaz = sum(HE_all)
+
+    return -ll_haz + ll_chaz
+end
+
+
+
+
+
+
+
+
+
+#=
+********************************************************************************************************************************************************
+Function to find the MLE for the Hazard-Response excess hazard model (no covariates)
+
+Arguments:
+  times   : Vector of observed times t_i
+  status  : BitVector of censoring indicators δ_i (1 = event, 0 = censored)
+  hp      : Vector of population hazard values hp_i(t_i)
+  lu0     : Initial conditions for the ODE (log scale)
+  M       : Maximum number of iterations for the optimiser
+  init    : Initial values for the parameters (log scale)
+
+Returns:
+  optimiser : Optim optimisation object
+  log_lik   : The log likelihood function (callable)
+********************************************************************************************************************************************************
+=#
+
+function HRMLE(
+    times::Vector{Float64},
+    status::AbstractVector{Bool},
+    hp::Vector{Float64},
+    lu0::Vector{Float64},
+    M::Int,
+    init::Vector{Float64}
+)
+    # Pre-compute log population hazard for uncensored observations (outside the likelihood)
+    log_hp = log.(hp[status])
+
+    # Time spans: each individual solved from 0 to t_i
+    tspans = [(0.0, t) for t in times]
+    n = length(times)
+
+    # Log likelihood function
+    log_lik = function (par::Vector{Float64})
+
+        # ODE parameters (4 scalar params, no covariates yet)
+        odeparams = exp.(par)  # [λ, κ, α, β]
+
+        # Solve ODE for each individual up to their event/censoring time
+        OUT = Matrix{Float64}(undef, n, 3)
+        for i in 1:n
+            sol = solve(
+                ODEProblem(HRJL, lu0, tspans[i], odeparams);
+                alg_hints = [:stiff]
+            )
+            OUT[i, :] = sol.u[end]
+        end
+
+        # log h_E(t_i | θ) for uncensored individuals (ODE state 1 = log hazard)
+        log_hE_uncens = OUT[status, 1]
+
+        # log(hp_i + h_E_i) = logsumexp(log_hp_i, log_hE_i) for uncensored
+        ll_haz = sum(logsumexp(log_hp[i], log_hE_uncens[i]) for i in eachindex(log_hE_uncens))
+
+        # Cumulative hazard H_E(t_i | θ) for all individuals (ODE state 3)
+        ll_chaz = sum(OUT[:, 3])
+
+        return ll_haz - ll_chaz
+    end
+
+    mlog_lik = par -> -log_lik(par)
+
+    # Optimisation
+    optimiser = optimize(mlog_lik, init; method = NelderMead(), iterations = M)
+
+    return optimiser, log_lik
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Negative log likelihood function: original formulation (h and q)
 mlog_lik0 = function (par::Vector{Float64})
     #    if any(par .> 7.0)
     #        mloglik = Inf64
@@ -182,6 +257,22 @@ mlog_lik0 = function (par::Vector{Float64})
     #    end
     return mloglik
 end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # Negative log likelihood function (log h and log q)

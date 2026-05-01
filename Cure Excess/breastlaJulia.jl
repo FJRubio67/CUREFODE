@@ -29,6 +29,7 @@ using JLD2
 using RData
 using StatsFuns
 using HazReg
+using LogExpFunctions
 
 # Additional routines
 include("routines.jl")
@@ -163,7 +164,7 @@ Fitting the model without covariates: MLE
 =#
 
 # MLE: No covariates
-optmle0 = optimize(mlog_likL0, [0.0,0.0,0.0,0.0], method=NelderMead(), iterations=10000)
+optmle0 = optimize(mlog_likL0, [0.0,0.0,0.0,0.0], method=NelderMead(), maxiters=10000)
 
 MLE0 = optmle0.minimizer
 
