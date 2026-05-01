@@ -93,20 +93,16 @@ end
 #= Survival times =#
 times = copy(df.Time);
 
-# log-population hazard
-log_mort_h = log.(df.mort_h);
-
-# Time grids
-tspan0 = hcat(zeros(n), df.Time);
-
-tspan00 = vcat(0.0, df.Time);
-tmax = maximum(df.Time)
+#= Population hazard =#
+hp = copy(df.mort_h);
 
 # Initial conditions (h,q,H)
 u0 = [1.0e-3, 1.0e-6, 0.0]
 
 # Initial conditions (log h,log q,H)
 lu0 = [log(1.0e-3), log(1.0e-6), 0.0]
+
+
 
 #=
 ****************************************************************************

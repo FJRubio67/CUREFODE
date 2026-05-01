@@ -139,9 +139,31 @@ function mlog_lik0(par::Vector{Float64}, times::Vector{Float64}, status::Abstrac
 end
 
 
+# Negative log likelihood function (log h and log q)
 
+function mlog_lik0L(par::Vector{Float64}, times::Vector{Float64}, status::AbstractVector{Bool}, hp::Vector{Float64}, u0::Vector{Float64})
+    # Parameters for the ODE
+    odeparams = exp.(par)
+    tmax = maximum(times)
 
+    sol = solve(ODEProblem(HRJL, lu0, [0.0, tmax], odeparams); alg_hints=[:stiff])
+    OUT = sol(times)
 
+    # log h_E(t_i | θ) for all i, and for uncensored only
+    lhE_all  = OUT[1, :]          # length n
+    HE_all  = OUT[3, :]          # length n  (cumulative hazard)
+
+    # log(hp_i + h_E_i) via logsumexp for numerical stability
+    # logsumexp([a, b]) = log(exp(a) + exp(b))
+    ll_haz = sum(
+        logsumexp(log(hp[i]), lhE_all[i])
+        for i in eachindex(times) if status[i]
+    )
+
+    ll_chaz = sum(HE_all)
+
+    return -ll_haz + ll_chaz
+end
 
 
 
@@ -157,59 +179,50 @@ Arguments:
   lu0     : Initial conditions for the ODE (log scale)
   M       : Maximum number of iterations for the optimiser
   init    : Initial values for the parameters (log scale)
-
+  log_scale : Boolean indicating whether to use log scale (default: true)
 Returns:
   optimiser : Optim optimisation object
   log_lik   : The log likelihood function (callable)
 ********************************************************************************************************************************************************
 =#
 
-function HRMLE(
+function EHRMLE(
     times::Vector{Float64},
     status::AbstractVector{Bool},
     hp::Vector{Float64},
-    lu0::Vector{Float64},
+    u0::Vector{Float64},
     M::Int,
-    init::Vector{Float64}
+    init::Vector{Float64};
+    log_scale::Bool = true        # true = log h/q formulation, false = h/q formulation
 )
     # Pre-compute log population hazard for uncensored observations (outside the likelihood)
     log_hp = log.(hp[status])
-
-    # Time spans: each individual solved from 0 to t_i
-    tspans = [(0.0, t) for t in times]
+    tmax = maximum(times)
     n = length(times)
+
+    # Select ODE function based on formulation
+    ode_fun = log_scale ? HRJL : HRJ
 
     # Log likelihood function
     log_lik = function (par::Vector{Float64})
 
-        # ODE parameters (4 scalar params, no covariates yet)
         odeparams = exp.(par)  # [λ, κ, α, β]
 
-        # Solve ODE for each individual up to their event/censoring time
-        OUT = Matrix{Float64}(undef, n, 3)
-        for i in 1:n
-            sol = solve(
-                ODEProblem(HRJL, lu0, tspans[i], odeparams);
-                alg_hints = [:stiff]
-            )
-            OUT[i, :] = sol.u[end]
-        end
+        sol = solve(ODEProblem(ode_fun, u0, [0.0, tmax], odeparams); alg_hints=[:stiff])
+        OUT = sol(times)
 
-        # log h_E(t_i | θ) for uncensored individuals (ODE state 1 = log hazard)
-        log_hE_uncens = OUT[status, 1]
+        # If log_scale: OUT[1, :] is already log h_E, so use directly
+        # If not:       OUT[1, :] is h_E, so take log
+        log_hE_uncens = log_scale ? OUT[1, status] : log.(OUT[1, status])
 
-        # log(hp_i + h_E_i) = logsumexp(log_hp_i, log_hE_i) for uncensored
         ll_haz = sum(logsumexp(log_hp[i], log_hE_uncens[i]) for i in eachindex(log_hE_uncens))
-
-        # Cumulative hazard H_E(t_i | θ) for all individuals (ODE state 3)
-        ll_chaz = sum(OUT[:, 3])
+        ll_chaz = sum(OUT[3, :])
 
         return ll_haz - ll_chaz
     end
 
     mlog_lik = par -> -log_lik(par)
 
-    # Optimisation
     optimiser = optimize(mlog_lik, init; method = NelderMead(), iterations = M)
 
     return optimiser, log_lik
@@ -218,45 +231,6 @@ end
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Negative log likelihood function: original formulation (h and q)
-mlog_lik0 = function (par::Vector{Float64})
-    #    if any(par .> 7.0)
-    #        mloglik = Inf64
-    #    else
-    # Parameters for the ODE
-    odeparams = exp.(par)
-
-    sol = solve(ODEProblem(HRJ, u0, [0.0, tmax], odeparams); alg_hints=[:stiff])
-    #     sol = solve(ODEProblem(HRJ, u0, tspan0[i, :], odeparams[i, :]), Tsit5())
-    OUT = sol(df.Time)
-
-
-    # Terms in the log log likelihood function
-    ll_haz = sum(log.(OUT[1, status] + df.mort_h[status]))
-
-    ll_chaz = sum(OUT[3, :])
-
-    mloglik = -ll_haz + ll_chaz
-    #    end
-    return mloglik
-end
 
 
 
