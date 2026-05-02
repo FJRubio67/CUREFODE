@@ -1,4 +1,3 @@
-
 #=
 ****************************************************************************
 Required packages
@@ -102,7 +101,28 @@ u0 = [1.0e-3, 1.0e-6, 0.0]
 # Initial conditions (log h,log q,H)
 lu0 = [log(1.0e-3), log(1.0e-6), 0.0]
 
+#=
+****************************************************************************
+Fitting the model without covariates: MLE 
+****************************************************************************
+=#
 
+# MLE: No covariates
+optmle0 = EHRMLE(times, status, hp, u0, 10000, [0.0,0.0,0.0,0.0]; log_scale=true)
+
+LMLE0 = optmle0[1].minimizer
+
+
+# ODE solutions
+sol0 = solve(ODEProblem(HRJ, u0, maximum(times), exp.(LMLE0), Tsit5()),saveat=0.05)
+
+sol0 = solve(ODEProblem(HRJL, lu0, [0.0, maximum(times)], exp.(LMLE0)), Tsit5(), saveat=0.05)
+
+OUT = reduce(hcat, sol0.u)  # 3 × T numeric matrix, rows = ODE states, cols = time points
+
+plot!(sol0.t, exp.(-OUT[3, :]), linewidth=3,
+      linecolor="blue", linestyle=:solid,
+      legend=true, label="xxx")
 
 #=
 ****************************************************************************
@@ -153,16 +173,6 @@ plot(ktimes, ksurvival,
   xguidefontsize=18, yguidefontsize=18, linewidth=3,
   linecolor = "gray", ylims = (0,1), linestyle=:solid)
 
-#=
-****************************************************************************
-Fitting the model without covariates: MLE 
-****************************************************************************
-=#
-
-# MLE: No covariates
-optmle0 = optimize(mlog_likL0, [0.0,0.0,0.0,0.0], method=NelderMead(), maxiters=10000)
-
-MLE0 = optmle0.minimizer
 
 
 #=
@@ -183,13 +193,3 @@ optmle = HRMLEMT(des_full, index_sel0, 10000, init)
 
 MLE = optmle.minimizer
 
-#=
-****************************************************************************
-Fitting the model without covariates: MAPs 
-****************************************************************************
-=#
-
-# MAP: No covariates
-optmap0 = optimize(mlog_postL0, [0.0,0.0,0.0,0.0], method=NelderMead(), iterations=1000)
-
-MAP0 = optmap0.minimizer
