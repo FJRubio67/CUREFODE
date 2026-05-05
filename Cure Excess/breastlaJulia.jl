@@ -29,6 +29,7 @@ using RData
 using StatsFuns
 using HazReg
 using LogExpFunctions
+using NetSurvival
 
 # Additional routines
 include("routines.jl")
@@ -108,21 +109,19 @@ Fitting the model without covariates: MLE
 =#
 
 # MLE: No covariates
-optmle0 = EHRMLE(times, status, hp, u0, 10000, [0.0,0.0,0.0,0.0]; log_scale=true)
+optmle0 = EHRMLE(times, status, hp, lu0, 10000, [0.0,0.0,0.0,0.0]; log_scale=true)
 
 LMLE0 = optmle0[1].minimizer
 
 
 # ODE solutions
-sol0 = solve(ODEProblem(HRJ, u0, maximum(times), exp.(LMLE0), Tsit5()),saveat=0.05)
-
 sol0 = solve(ODEProblem(HRJL, lu0, [0.0, maximum(times)], exp.(LMLE0)), Tsit5(), saveat=0.05)
 
 OUT = reduce(hcat, sol0.u)  # 3 × T numeric matrix, rows = ODE states, cols = time points
 
-plot!(sol0.t, exp.(-OUT[3, :]), linewidth=3,
-      linecolor="blue", linestyle=:solid,
-      legend=true, label="xxx")
+plot(sol0.t, exp.(-OUT[3, :]), linewidth=3,
+     linecolor="blue", linestyle=:solid,
+     legend=true, label="xxx")
 
 #=
 ****************************************************************************
@@ -153,26 +152,6 @@ p_b = size(des_b)[2];
 # Intercept positions
 indint = [1, p_l + 1, p_l + p_k + 1, p_l + p_k + p_a + 1]
 indbeta = deleteat!(collect(1:(p_l+p_k+p_a+p_b)), indint)
-
-#=
-****************************************************************************
-Kaplan-Meier estimate
-****************************************************************************
-=#
-
-# Kaplan-Meier estimator 
-km = fit(KaplanMeier, df.Time, df.Status)
-ktimes = sort(unique(times))
-ksurvival = km.survival
-
-# Comparison
-plot(ktimes, ksurvival,
-    xlabel = "Time (years)", ylabel = "Population Survival", title = "",
-  xlims = (0.0001,maximum(times)),   xticks = 0:2:maximum(times), label = "", 
-  xtickfont = font(16, "Courier"),  ytickfont = font(16, "Courier"),
-  xguidefontsize=18, yguidefontsize=18, linewidth=3,
-  linecolor = "gray", ylims = (0,1), linestyle=:solid)
-
 
 
 #=
