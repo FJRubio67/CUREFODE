@@ -119,9 +119,8 @@ sol0 = solve(ODEProblem(HRJL, lu0, [0.0, maximum(times)], exp.(LMLE0)), Tsit5(),
 
 OUT = reduce(hcat, sol0.u)  # 3 × T numeric matrix, rows = ODE states, cols = time points
 
-plot(sol0.t, exp.(-OUT[3, :]), linewidth=3,
-     linecolor="blue", linestyle=:solid,
-     legend=true, label="xxx")
+plot(sol0.t, exp.(-OUT[3, :]), linewidth=3, color=:blue, linestyle=:solid,
+    label="Survival function", xlabel="Time (Years)", ylabel="S(t)")
 
 #=
 ****************************************************************************
