@@ -1,13 +1,32 @@
 #=
 ****************************************************************************
 ****************************************************************************
-Additional functions
+Routines for the hazard-response excess hazard model
+
+Functions only: no data are loaded or created in this file, so it can be
+include()d at the top of the analysis script.
+
+Required packages:
+    using OrdinaryDiffEqRosenbrock, SciMLBase, Optim, LogExpFunctions,
+          Statistics, LinearAlgebra, StaticArrays, DiffResults, ForwardDiff
 ****************************************************************************
 ****************************************************************************
 =#
 
-# Standardisation function
-scale(x) = (x .- mean(x)) ./ std(x)
+#=
+****************************************************************************
+Additional functions
+****************************************************************************
+=#
+
+# Standardisation (named `standardise` to avoid clashing with Distributions.scale)
+standardise(x) = (x .- mean(x)) ./ std(x)
+
+# Treatment-coded dummies: one column per level, except the reference level
+function dummies(x; ref = minimum(unique(x)))
+    levs = sort(setdiff(unique(x), [ref]))
+    return Float64.(x .== permutedims(levs)), levs
+end
 
 function key2matrix(key)
     out = reshape(parse.(Int, split(key, "_")), (4, 5))
@@ -16,34 +35,23 @@ end
 
 #=
 ****************************************************************************
-****************************************************************************
-Hazard-Response model
-****************************************************************************
+Hazard-response model, in-place versions
+u = (h, q, H) or (log h, log q, H),  p = (λ, κ, α, β)
 ****************************************************************************
 =#
 
-# Hazard-Response ODE model
+# Natural scale
 function HazResp(dh, h, p, t)
-    # Model parameters
     lambda, kappa, alpha, beta = p
-
-    # ODE System
-    dh[1] = lambda * h[1] * (1 - h[1] / kappa) - alpha * h[1] * h[2] # hazard
-    dh[2] = beta * h[2] * (1 - h[2] / kappa) - alpha * h[1] * h[2] # response
-    dh[3] = h[1] # cumulative hazard
+    dh[1] = lambda * h[1] * (1 - h[1] / kappa) - alpha * h[1] * h[2]   # hazard
+    dh[2] = beta * h[2] * (1 - h[2] / kappa) - alpha * h[1] * h[2]     # response
+    dh[3] = h[1]                                                       # cumulative hazard
     return nothing
 end
 
-# Jacobian for Hazard-Response model
-
 function jacHR(J, u, p, t)
-    # Parameters
     lambda, kappa, alpha, beta = p
-    # state variables
-    h = u[1]
-    q = u[2]
-
-    # Jacobian
+    h, q = u[1], u[2]
     J[1, 1] = lambda * (1 - 2 * h / kappa) - alpha * q
     J[1, 2] = -alpha * h
     J[1, 3] = 0.0
@@ -53,42 +61,23 @@ function jacHR(J, u, p, t)
     J[3, 1] = 1.0
     J[3, 2] = 0.0
     J[3, 3] = 0.0
-    nothing
-end
-
-# Hazard-Response model with explicit Jacobian
-HRJ = ODEFunction(HazResp; jac=jacHR)
-
-#=
-****************************************************************************
-****************************************************************************
-Hazard-Response model (log h and log q)
-****************************************************************************
-****************************************************************************
-=#
-
-# Hazard-Response ODE model
-function HazRespL(dlh, lh, p, t)
-    # Model parameters
-    lambda, kappa, alpha, beta = p
-
-    # ODE System
-    dlh[1] = lambda * (1 - exp(lh[1]) / kappa) - alpha * exp(lh[2]) # log hazard
-    dlh[2] = beta * (1 - exp(lh[2]) / kappa) - alpha * exp(lh[1]) # log response
-    dlh[3] = exp(lh[1]) # cumulative hazard
     return nothing
 end
 
-# Jacobian for Hazard-Response model
+HRJ = ODEFunction(HazResp; jac = jacHR)
+
+# Log scale for h and q
+function HazRespL(dlh, lh, p, t)
+    lambda, kappa, alpha, beta = p
+    dlh[1] = lambda * (1 - exp(lh[1]) / kappa) - alpha * exp(lh[2])   # log hazard
+    dlh[2] = beta * (1 - exp(lh[2]) / kappa) - alpha * exp(lh[1])     # log response
+    dlh[3] = exp(lh[1])                                               # cumulative hazard
+    return nothing
+end
 
 function jacHRL(J, u, p, t)
-    # Parameters
     lambda, kappa, alpha, beta = p
-    # state variables
-    lh = u[1]
-    lq = u[2]
-
-    # Jacobian
+    lh, lq = u[1], u[2]
     J[1, 1] = -lambda * exp(lh) / kappa
     J[1, 2] = -alpha * exp(lq)
     J[1, 3] = 0.0
@@ -98,154 +87,295 @@ function jacHRL(J, u, p, t)
     J[3, 1] = exp(lh)
     J[3, 2] = 0.0
     J[3, 3] = 0.0
-    nothing
+    return nothing
 end
 
-# Hazard-Response model with explicit Jacobian
-HRJL = ODEFunction(HazRespL; jac=jacHRL)
+HRJL = ODEFunction(HazRespL; jac = jacHRL)
 
 #=
 ****************************************************************************
-****************************************************************************
-Functions: no covariates
-****************************************************************************
+Hazard-response model on the log scale, static-array (out-of-place) version
+Used by EHRMLE_cov
 ****************************************************************************
 =#
-
-
-# Negative log likelihood function: original formulation (h and q)
-function mlog_lik0(par::Vector{Float64}, times::Vector{Float64}, status::AbstractVector{Bool}, hp::Vector{Float64}, u0::Vector{Float64})
-    # Parameters for the ODE
-    odeparams = exp.(par)
-    tmax = maximum(times)
-
-    sol = solve(ODEProblem(HRJ, u0, [0.0, tmax], odeparams); alg_hints=[:stiff])
-    OUT = sol(times)
-
-    # h_E(t_i | θ) for all i, and for uncensored only
-    hE_all  = OUT[1, :]          # length n
-    HE_all  = OUT[3, :]          # length n  (cumulative hazard)
-
-    # log(hp_i + h_E_i) via logsumexp for numerical stability
-    # logsumexp([a, b]) = log(exp(a) + exp(b))
-    ll_haz = sum(
-        logsumexp(log(hp[i]), log(hE_all[i]))
-        for i in eachindex(times) if status[i]
-    )
-
-    ll_chaz = sum(HE_all)
-
-    return -ll_haz + ll_chaz
+function HazRespL_s(u, p, t)
+    λ, κ, α, β = p
+    h, q = exp(u[1]), exp(u[2])
+    return SVector(λ * (1 - h / κ) - α * q,
+                   β * (1 - q / κ) - α * h,
+                   h)
 end
 
-
-# Negative log likelihood function (log h and log q)
-
-function mlog_lik0L(par::Vector{Float64}, times::Vector{Float64}, status::AbstractVector{Bool}, hp::Vector{Float64}, u0::Vector{Float64})
-    # Parameters for the ODE
-    odeparams = exp.(par)
-    tmax = maximum(times)
-
-    sol = solve(ODEProblem(HRJL, lu0, [0.0, tmax], odeparams); alg_hints=[:stiff])
-    OUT = sol(times)
-
-    # log h_E(t_i | θ) for all i, and for uncensored only
-    lhE_all  = OUT[1, :]          # length n
-    HE_all  = OUT[3, :]          # length n  (cumulative hazard)
-
-    # log(hp_i + h_E_i) via logsumexp for numerical stability
-    # logsumexp([a, b]) = log(exp(a) + exp(b))
-    ll_haz = sum(
-        logsumexp(log(hp[i]), lhE_all[i])
-        for i in eachindex(times) if status[i]
-    )
-
-    ll_chaz = sum(HE_all)
-
-    return -ll_haz + ll_chaz
+function jacHRL_s(u, p, t)
+    λ, κ, α, β = p
+    h, q = exp(u[1]), exp(u[2])
+    T = promote_type(eltype(u), eltype(p))
+    z = zero(T)
+    # Column-major order: column 1, column 2, column 3
+    return SMatrix{3,3,T}(-λ * h / κ, -α * h, h,
+                          -α * q, -β * q / κ, z,
+                          z, z, z)
 end
 
+# The system is autonomous
+tgradHRL_s(u, p, t) = zero(u)
 
-
+HRJL_s = ODEFunction{false}(HazRespL_s; jac = jacHRL_s, tgrad = tgradHRL_s)
 
 #=
-********************************************************************************************************************************************************
-Function to find the MLE for the Hazard-Response excess hazard model (no covariates)
+********************************************************************************
+EHRMLE: MLE for the hazard-response excess hazard model (no covariates)
 
-Arguments:
-  times   : Vector of observed times t_i
-  status  : BitVector of censoring indicators δ_i (1 = event, 0 = censored)
-  hp      : Vector of population hazard values hp_i(t_i)
-  lu0     : Initial conditions for the ODE (log scale)
-  M       : Maximum number of iterations for the optimiser
-  init    : Initial values for the parameters (log scale)
-  log_scale : Boolean indicating whether to use log scale (default: true)
-  opt_method  : Optimisation method (default: NelderMead())
-Returns:
-  optimiser : Optim optimisation object
-  log_lik   : The log likelihood function (callable)
-********************************************************************************************************************************************************
+  times     : observed times t_i
+  status    : event indicators δ_i
+  hp        : population hazard h_P(age_i + t_i)
+  h0q0      : (h0, q0) on the NATURAL scale
+  M         : maximum number of iterations
+  init      : initial values for log(λ, κ, α, β)
+  log_scale : solve for (log h, log q) (default) or (h, q)
+
+Returns (optimiser, log_lik)
+********************************************************************************
 =#
-
 function EHRMLE(
-    times::Vector{Float64},
+    times::AbstractVector{<:Real},
     status::AbstractVector{Bool},
-    hp::Vector{Float64},
-    u0::Vector{Float64},
+    hp::AbstractVector{<:Real},
+    h0q0::AbstractVector{<:Real},
     M::Int,
-    init::Vector{Float64};
+    init::AbstractVector{<:Real};
     log_scale::Bool = true,
-    opt_method = NelderMead()
+    opt_method = NelderMead(),
+    alg = Rodas5P(),
+    reltol = 1e-8,
+    abstol = 1e-10,
 )
-    # Pre-compute log population hazard for uncensored observations (outside the likelihood)
-    log_hp = log.(hp[status])
-    tmax = maximum(times)
     n = length(times)
+    @assert length(status) == n && length(hp) == n
+    @assert all(>(0), h0q0[1:2])
 
-    # Select ODE function based on formulation
+    # Initial condition on the ODE's scale; H(0) = 0 always
+    u0 = log_scale ? [log(h0q0[1]), log(h0q0[2]), 0.0] :
+                     [float(h0q0[1]), float(h0q0[2]), 0.0]
     ode_fun = log_scale ? HRJL : HRJ
 
-    # Log likelihood function
-    log_lik = function (par::Vector{Float64})
+    tgrid     = sort(unique(Float64.(times)))
+    ev        = findall(status)
+    log_hp_ev = log.(hp[ev])
 
-        odeparams = exp.(par)  # [λ, κ, α, β]
+    prob = ODEProblem(ode_fun, u0, (0.0, tgrid[end]), exp.(init))
 
-        sol = solve(ODEProblem(ode_fun, u0, [0.0, tmax], odeparams); alg_hints=[:stiff])
-        OUT = sol(times)
+    function log_lik(par::AbstractVector)
+        sol = solve(remake(prob; p = exp.(par)), alg;
+                    saveat = tgrid, reltol = reltol, abstol = abstol)
+        SciMLBase.successful_retcode(sol) || return -Inf
 
-        # If log_scale: OUT[1, :] is already log h_E, so use directly
-        # If not:       OUT[1, :] is h_E, so take log
-        log_hE_uncens = log_scale ? OUT[1, status] : log.(OUT[1, status])
+        idx = searchsortedfirst.(Ref(sol.t), times)
+        U   = Array(sol)
 
-        ll_haz = sum(logsumexp(log_hp[i], log_hE_uncens[i]) for i in eachindex(log_hE_uncens))
-        ll_chaz = sum(OUT[3, :])
+        if log_scale
+            lhE = U[1, idx[ev]]
+        else
+            hE = U[1, idx[ev]]
+            any(<=(0), hE) && return -Inf
+            lhE = log.(hE)
+        end
 
-        return ll_haz - ll_chaz
+        ll = sum(logaddexp.(log_hp_ev, lhE)) - sum(U[3, idx])
+        return isfinite(ll) ? ll : -Inf
     end
 
-    mlog_lik = par -> -log_lik(par)
-
-    optimiser = optimize(mlog_lik, init, opt_method, Optim.Options(iterations = M))
-
+    optimiser = optimize(p -> -log_lik(p), collect(float.(init)), opt_method,
+                         Optim.Options(iterations = M))
     return optimiser, log_lik
 end
 
+#=
+****************************************************************************
+Group individuals with identical rows of X
+Returns the G × p matrix of unique rows and, for each group:
+  tg  : sorted unique observed times in the group
+  idx : position in tg of each member's time
+  d   : event indicators of the members
+  lhp : log population hazard of the members
+****************************************************************************
+=#
+function make_groups(times, status, hp, X)
+    n    = length(times)
+    rows = [X[i, :] for i in 1:n]
+    ux   = unique(rows)
+    pos  = Dict(r => g for (g, r) in enumerate(ux))
+    members = [Int[] for _ in ux]
+    for i in 1:n
+        push!(members[pos[rows[i]]], i)
+    end
+    groups = map(members) do m
+        tg = sort(unique(Float64.(times[m])))
+        (tg  = tg,
+         idx = searchsortedfirst.(Ref(tg), times[m]),
+         d   = collect(Bool, status[m]),
+         lhp = log.(hp[m]))
+    end
+    Xg = reduce(vcat, permutedims.(ux))
+    return Xg, groups
+end
 
+#=
+****************************************************************************
+Log-likelihood contribution of one group as a function of η = log θ
+****************************************************************************
+=#
+function group_ll(η::SVector{4,T}, g, u0, alg, reltol, abstol) where {T}
+    θ    = exp.(η)
+    prob = ODEProblem{false}(HRJL_s, SVector{3,T}(u0), (0.0, g.tg[end]), θ)
+    sol  = solve(prob, alg; saveat = g.tg, save_start = false,
+                 reltol = reltol, abstol = abstol)
+    SciMLBase.successful_retcode(sol) || return T(-Inf)
+    length(sol.u) == length(g.tg) || return T(-Inf)
 
+    ll = zero(T)
+    @inbounds for (j, m) in enumerate(g.idx)
+        u = sol.u[m]                       # (log h_E(t), log q(t), H_E(t))
+        ll += (g.d[j] ? logaddexp(g.lhp[j], u[1]) : zero(T)) - u[3]
+    end
+    return ll
+end
 
+#=
+********************************************************************************
+EHRMLE_cov: MLE for the hazard-response excess hazard model with covariates
 
+log(θ_{k,i}) = X[i, index_sel[k,:] .== 1]' β_k,   θ = (λ, κ, α, β)
 
+  times     : observed times t_i
+  status    : event indicators δ_i
+  hp        : population hazard h_P(age_i + t_i)
+  X         : n × p design matrix, first column = intercept
+  index_sel : 4 × p 0/1 matrix (rows λ, κ, α, β); column 1 must be 1
+  h0q0      : (h0, q0) on the natural scale
+  M         : maximum number of iterations
+  init      : initial values, layout [β_λ; β_κ; β_α; β_β]
 
+Individuals are grouped by the covariates used by at least one parameter,
+so dropping a covariate from all four regressions reduces the number of
+ODE solves. With intercepts only, there is a single solve.
 
+Returns a named tuple with
+  optimiser : Optim result
+  log_lik   : par -> log-likelihood
+  neg_hess  : par -> Hessian of the negative log-likelihood (observed information)
+  sel       : selected columns of X for each parameter
+  blocks    : positions of each parameter's coefficients in par
+  ngroups   : number of distinct covariate patterns (ODE solves per evaluation)
+********************************************************************************
+=#
+function EHRMLE_cov(
+    times::AbstractVector{<:Real},
+    status::AbstractVector{Bool},
+    hp::AbstractVector{<:Real},
+    X::AbstractMatrix{<:Real},
+    index_sel::AbstractMatrix{<:Integer},
+    h0q0::AbstractVector{<:Real},
+    M::Int,
+    init::AbstractVector{<:Real};
+    opt_method = NewtonTrustRegion(),
+    alg = Rodas5P(),
+    reltol = 1e-8,
+    abstol = 1e-10,
+)
+    n = length(times)
+    @assert size(X, 1) == n && length(status) == n && length(hp) == n
+    @assert size(index_sel) == (4, size(X, 2))
+    @assert all(index_sel[:, 1] .== 1) "All four intercepts must be included"
+    @assert all(>(0), h0q0[1:2])
 
+    # Columns used by at least one parameter; group on those only
+    used = findall(vec(any(index_sel .== 1; dims = 1)))
+    Xg, groups = make_groups(times, status, hp, X[:, used])
+    G = length(groups)
 
+    # Selected columns (w.r.t. X, for predictions) and group design matrices
+    sel    = [findall(index_sel[k, :] .== 1) for k in 1:4]
+    desg   = [Xg[:, findall(index_sel[k, used] .== 1)] for k in 1:4]   # G × p_k
+    p      = length.(sel)
+    ends   = cumsum(p)
+    starts = ends .- p .+ 1
+    blocks = [starts[k]:ends[k] for k in 1:4]
+    npar   = ends[end]
+    @assert length(init) == npar "init must have length $npar"
 
+    u0 = SVector(log(float(h0q0[1])), log(float(h0q0[2])), 0.0)
 
+    # Value (order 0), + gradient (1), + Hessian (2) w.r.t. η for every group
+    function group_derivs(par, order)
+        E     = hcat((desg[k] * par[blocks[k]] for k in 1:4)...)   # G × 4
+        vals  = zeros(G)
+        grads = zeros(G, 4)
+        hess  = zeros(G, 4, 4)
+        Threads.@threads for g in 1:G
+            ηg = SVector{4,Float64}(E[g, 1], E[g, 2], E[g, 3], E[g, 4])
+            f  = η -> group_ll(η, groups[g], u0, alg, reltol, abstol)
+            if order == 0
+                vals[g] = f(ηg)
+            elseif order == 1
+                res = ForwardDiff.gradient!(DiffResults.GradientResult(ηg), f, ηg)
+                vals[g]     = DiffResults.value(res)
+                grads[g, :] = DiffResults.gradient(res)
+            else
+                res = ForwardDiff.hessian!(DiffResults.HessianResult(ηg), f, ηg)
+                vals[g]       = DiffResults.value(res)
+                grads[g, :]   = DiffResults.gradient(res)
+                hess[g, :, :] = DiffResults.hessian(res)
+            end
+        end
+        return vals, grads, hess
+    end
 
+    # Objective (negative log-likelihood), gradient and Hessian for Optim
+    function fgh!(F, Gr, H, par)
+        order = H !== nothing ? 2 : (Gr !== nothing ? 1 : 0)
+        vals, gr, hs = group_derivs(par, order)
+        ll = sum(vals)
 
+        if !isfinite(ll) || any(!isfinite, gr) || any(!isfinite, hs)
+            Gr === nothing || fill!(Gr, 0.0)
+            H  === nothing || fill!(H, 0.0)
+            return F === nothing ? nothing : Inf
+        end
 
+        if Gr !== nothing
+            for k in 1:4
+                Gr[blocks[k]] .= -(desg[k]' * gr[:, k])
+            end
+        end
+        if H !== nothing
+            for k in 1:4, l in 1:4
+                H[blocks[k], blocks[l]] .= -(desg[k]' * (hs[:, k, l] .* desg[l]))
+            end
+        end
+        return F === nothing ? nothing : -ll
+    end
 
+    log_lik(par)  = sum(group_derivs(par, 0)[1])
+    neg_hess(par) = (H = zeros(npar, npar); fgh!(nothing, nothing, H, par); H)
 
+    optimiser = optimize(Optim.only_fgh!(fgh!), collect(float.(init)), opt_method,
+                         Optim.Options(iterations = M))
 
+    return (optimiser = optimiser, log_lik = log_lik, neg_hess = neg_hess,
+            sel = sel, blocks = blocks, ngroups = G)
+end
 
-
+#=
+****************************************************************************
+Attractor regime (Theorem 1); boundary cases have measure zero
+****************************************************************************
+=#
+function attractor(λ, κ, α, μ)
+    a = α * κ
+    λ < a && μ > a && return :response_wins   # h_E → 0 exponentially, H_E(∞) < ∞
+    λ > a && μ < a && return :hazard_wins
+    λ > a && μ > a && return :coexistence
+    λ < a && μ < a && return :bistable        # depends on (h0, q0): use Theorem 1(iv)(d)
+    return :boundary
+end

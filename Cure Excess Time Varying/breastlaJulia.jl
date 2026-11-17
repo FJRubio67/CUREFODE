@@ -30,6 +30,7 @@ using StatsFuns
 using HazReg
 using LogExpFunctions
 using NetSurvival
+using StaticArrays, DiffResults 
 
 # Additional routines
 include("routines.jl")
@@ -96,11 +97,6 @@ times = copy(df.Time);
 #= Population hazard =#
 hp = copy(df.mort_h);
 
-# Initial conditions (h,q,H)
-u0 = [1.0e-3, 1.0e-6, 0.0]
-
-# Initial conditions (log h,log q,H)
-lu0 = [log(1.0e-3), log(1.0e-6), 0.0]
 
 #=
 ****************************************************************************
@@ -108,66 +104,163 @@ Fitting the model without covariates: MLE
 ****************************************************************************
 =#
 
-# MLE: No covariates
-optmle0 = EHRMLE(times, status, hp, lu0, 10000, [0.0,0.0,0.0,0.0]; log_scale=true)
+# Initial conditions on the natural scale
+h0q0  = [1.0e-3, 1.0e-6]
 
-LMLE0 = optmle0[1].minimizer
+# Starting values for log(λ, κ, α, β): avoid all zeros (degenerate case)
+init0 = log.([1.0, 1.0, 1.0, 1.0])
 
-
-# ODE solutions
-sol0 = solve(ODEProblem(HRJL, lu0, [0.0, maximum(times)], exp.(LMLE0)), Tsit5(), saveat=0.05)
-
-OUT = reduce(hcat, sol0.u)  # 3 × T numeric matrix, rows = ODE states, cols = time points
-
-plot(sol0.t, exp.(-OUT[3, :]), linewidth=3, color=:blue, linestyle=:solid,
-    label="Survival function", xlabel="Time (Years)", ylabel="S(t)")
-
-#=
-****************************************************************************
-Data preparation for best model
-****************************************************************************
-=#
-
-# Design matrix including variables of interest for model building
-# age + sizes + nodes + trt
-des_full = hcat( scale(df.age), df.race .- 1.0, grades[:,1:3])
-
-# Design matrices for the regression models for each parameter
-#(intercept,age,sizes,nodes,trt)
-# lambda: intercept + nodes + trt
-#des_l = hcat(ones(n), des_full[:,3:4]);
-des_l = copy(des_full)
-p_l = size(des_l)[2];
-# kappa: intercept + nodes
-des_k = copy(des_full)
-p_k = size(des_k)[2];
-# alpha: intercept + nodes + trt
-des_a = copy(des_full)
-p_a = size(des_a)[2];
-# beta: intercept + age + sizes + trt
-des_b = copy(des_full)
-p_b = size(des_b)[2];
-
-# Intercept positions
-indint = [1, p_l + 1, p_l + p_k + 1, p_l + p_k + p_a + 1]
-indbeta = deleteat!(collect(1:(p_l+p_k+p_a+p_b)), indint)
+# MLE: no covariates
+optmle0 = EHRMLE(times, status, hp, h0q0, 10000, init0)
+LMLE0   = optmle0[1].minimizer
+Optim.converged(optmle0[1])
 
 
 #=
 ****************************************************************************
-Fitting the model with covariates: MLE 
+Fitted ODE solutions: checks
 ****************************************************************************
 =#
 
-# Index for saturated model
-index_sel0 =  vcat([1,1,1,1,1,1]',[1,1,1,1,1,1]',[1,1,1,1,1,1]',[1,1,1,1,1,1]')
+# Solve the fitted model on a grid that is fine near t = 0 (log-spaced + linear)
+function solve_fit(par; h0q0 = h0q0, tmax = maximum(times), alg = Rodas5P())
+    u0    = [log(h0q0[1]), log(h0q0[2]), 0.0]
+    tgrid = sort(unique(vcat(0.0,
+                             exp10.(range(-4, log10(tmax), length = 400)),
+                             range(0.0, tmax, length = 400))))
+    sol = solve(ODEProblem(HRJL, u0, (0.0, tmax), exp.(par)), alg;
+                saveat = tgrid, reltol = 1e-8, abstol = 1e-10)
+    U = Array(sol)
+    return (t = sol.t, h = exp.(U[1, :]), q = exp.(U[2, :]), H = U[3, :],
+            retcode = sol.retcode)
+end
 
-# Initial values for optimization
-# init = vec(permutedims(hcat(MLE0, zeros(length(MLE0), 5))))
-init = zeros(p_l + p_k + p_a + p_b + 4)
+# Fits to compare (drop one if you only have a single fit)
+fits = [("start: zeros", fitA), ("start: init0", fitB)]
 
-# MLE: No covariates
-optmle = HRMLEMT(des_full, index_sel0, 10000, init)
+p1 = plot(title = "Excess hazard", xlabel = "Time (years)", ylabel = "h_E(t)")
+p2 = plot(title = "Excess hazard (log–log)", xlabel = "Time (years)", ylabel = "h_E(t)",
+          xscale = :log10, yscale = :log10)
+p3 = plot(title = "Response (fraction of κ)", xlabel = "Time (years)", ylabel = "q(t)/κ",
+          xscale = :log10, yscale = :log10)
+p4 = plot(title = "Net survival", xlabel = "Time (years)", ylabel = "S_N(t)", ylim = (0, 1))
 
-MLE = optmle.minimizer
+for (lab, f) in fits
+    par = f[1].minimizer
+    λ, κ, α, μ = exp.(par)
+    a   = α * κ
+    reg = attractor(λ, κ, α, μ)
+    s   = solve_fit(par)
+
+    println("\n", lab, "  (retcode: ", s.retcode, ")")
+    println("  loglik      = ", f[2](par))
+    println("  λ, κ, α, μ  = ", round.([λ, κ, α, μ], sigdigits = 4))
+    println("  a = ακ      = ", round(a, sigdigits = 4), "   regime: ", reg)
+    println("  peak h_E    = ", round(maximum(s.h), sigdigits = 4),
+            " at t = ", round(s.t[argmax(s.h)], sigdigits = 3))
+    println("  S_N(tmax)   = ", round(exp(-s.H[end]), sigdigits = 4))
+    if reg == :response_wins
+        # Tail correction: h_E(t) ≈ h_E(T) e^{-(a-λ)(t-T)} beyond T
+        Hinf = s.H[end] + s.h[end] / (a - λ)
+        println("  cure fraction exp(-H_E(∞)) ≈ ", round(exp(-Hinf), sigdigits = 4))
+    end
+
+    pos = (s.t .> 0) .& (s.h .> 0) .& (s.q .> 0)   # positive values for log axes
+    plot!(p1, s.t, s.h, lw = 2, label = "$lab ($reg)")
+    plot!(p2, s.t[pos], s.h[pos], lw = 2, label = false)
+    plot!(p3, s.t[pos], s.q[pos] ./ κ, lw = 2, label = false)
+    plot!(p4, s.t, exp.(-s.H), lw = 2, label = false)
+end
+
+# Observed event times, as a rug on the hazard panel
+vline!(p1, times[status], alpha = 0.03, color = :grey, label = false)
+
+plot(p1, p2, p3, p4, layout = (2, 2), size = (1000, 750), legend = :topright)
+
+#=
+****************************************************************************
+Data preparation for model with covariates
+****************************************************************************
+=#
+
+# Standardisation (renamed from `scale` to avoid clashing with Distributions.scale);
+# move this to routines.jl
+standardise(x) = (x .- mean(x)) ./ std(x)
+
+# Treatment-coded dummies: one column per level, except the reference level
+function dummies(x; ref = minimum(unique(x)))
+    levs = sort(setdiff(unique(x), [ref]))
+    return Float64.(x .== permutedims(levs)), levs
+end
+
+# Covariates: age (standardised) + race + grade
+age_mean, age_sd = mean(df.age), std(df.age)   # keep these for predictions
+race_d,  race_levs  = dummies(df.race)          # reference: lowest race code
+grade_d, grade_levs = dummies(df.grade)         # reference: lowest grade
+
+# Full design matrix, intercept included
+X = hcat(ones(n), (df.age .- age_mean) ./ age_sd, race_d, grade_d)
+colnames = vcat("(Intercept)", "age (std)",
+                "race = " .* string.(race_levs),
+                "grade = " .* string.(grade_levs))
+
+@assert rank(X) == size(X, 2) "Design matrix is rank deficient: check the coding"
+freqtable(df.grade), freqtable(df.race)          # check the levels and reference categories
+
+# Design matrices for each parameter: all covariates enter every regression
+# log(λ_i) = des_l[i,:]' β_λ,   log(κ_i) = des_k[i,:]' β_κ,
+# log(α_i) = des_a[i,:]' β_α,   log(β_i) = des_b[i,:]' β_β
+des_l = X
+des_k = X
+des_a = X
+des_b = X
+
+# Parameter-vector layout: [β_λ; β_κ; β_α; β_β], each block starting with its intercept
+p       = [size(des_l, 2), size(des_k, 2), size(des_a, 2), size(des_b, 2)]
+ends    = cumsum(p)
+starts  = ends .- p .+ 1
+blocks  = [starts[j]:ends[j] for j in 1:4]
+indint  = starts                          # intercept positions
+indbeta = setdiff(1:ends[end], indint)    # regression-coefficient positions
+npar    = ends[end]
+
+# Selection index for the saturated model (rows: λ, κ, α, β; columns: columns of X)
+index_sel0 = ones(Int, 4, size(X, 2))
+
+# Initial values: no-covariate MLE in the intercepts, zero slopes
+init = zeros(npar)
+init[indint] .= LMLE0
+
+
+#=
+****************************************************************************
+Fitting the model with covariates: MLE
+****************************************************************************
+=#
+
+Threads.nthreads()                       # should be > 1
+
+# Saturated model: every covariate in every parameter
+index_sel0 = ones(Int, 4, size(X, 2))
+
+# Initial values: no-covariate MLE in the intercepts, zero slopes
+init = zeros(npar)
+init[indint] .= LMLE0
+
+# Time one likelihood evaluation before running the optimiser
+tmp = EHRMLE_cov(times, status, hp, X, index_sel0, h0q0, 0, init)
+@time tmp.log_lik(init)
+@time ForwardDiff.gradient(tmp.log_lik, init)
+
+# MLE
+fit    = EHRMLE_cov(times, status, hp, X, index_sel0, h0q0, 200, init)
+optmle = fit.optimiser
+Optim.converged(optmle)
+MLE    = optmle.minimizer
+
+Hess = fit.neg_hess(MLE)                        # exact observed information
+SE   = sqrt.(diag(inv(Symmetric(Hess))))
+
+θhat = hcat((exp.(X[:, fit.sel[k]] * MLE[fit.blocks[k]]) for k in 1:4)...)
+freqtable(attractor.(θhat[:, 1], θhat[:, 2], θhat[:, 3], θhat[:, 4]))
 
