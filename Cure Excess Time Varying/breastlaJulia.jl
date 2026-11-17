@@ -108,7 +108,7 @@ Fitting the model without covariates: MLE
 h0q0  = [1.0e-3, 1.0e-6]
 
 # Starting values for log(λ, κ, α, β): avoid all zeros (degenerate case)
-init0 = log.([1.0, 1.0, 1.0, 1.0])
+init0 = log.([0.1, 0.1, 0.1, 0.1])
 
 # MLE: no covariates
 optmle0 = EHRMLE(times, status, hp, h0q0, 10000, init0)
