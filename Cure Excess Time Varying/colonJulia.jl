@@ -1,41 +1,26 @@
 #=
 ****************************************************************************
+Hazard-response excess hazard model: colonDC data, no covariates
+
+Data: colonDC (R package cuRe) with the population hazard at exit taken
+from rstpm2::popmort (Finnish life table), exported from R as
+colonDC_hp.csv (see colonDC_hp.R).
+****************************************************************************
+=#
+
+#=
+****************************************************************************
 Required packages
 ****************************************************************************
 =#
 
+using CSV, DataFrames, Statistics, LinearAlgebra, FreqTables
+using OrdinaryDiffEqRosenbrock, SciMLBase, Optim, LogExpFunctions
+using StaticArrays, DiffResults, ForwardDiff
 using Plots
-using DifferentialEquations
-using LinearAlgebra
-using CSV
-using LSODA
-using Optim
-using Distributions
-using Random
-using AdaptiveMCMC
-using Tables
-using DelimitedFiles
-using Statistics
-using Survival
-using DataFrames
-using FreqTables
-using Sundials
-using ForwardDiff
-using Turing
-using StatsPlots
-using StatsFuns
-using JLD2
-using RData
-using StatsFuns
-using HazReg
-using LogExpFunctions
-using NetSurvival
-using StaticArrays, DiffResults 
 
 # Additional routines
 include("routines.jl")
-
-
 
 #=
 ****************************************************************************
@@ -43,78 +28,95 @@ Data preparation
 ****************************************************************************
 =#
 
+df = CSV.read("colonDC_hp.csv", DataFrame; missingstring = "NA")
 
-#= Data =#
-df_full = load("breastla.rda")
-df = df_full["breastla"]
+# Remove patients with unknown stage
+freqtable(df.stage)                                   # check the labels first
+df = df[lowercase.(string.(df.stage)) .!= "unknown", :]
 
+# Complete records for the variables used
+dropmissing!(df, [:FU, :status, :mort_h, :stage, :age, :sex])
 
-# Removing patients with missing grade Data
-indobs = zeros(size(df)[1])
-for i in 1:size(df)[1]
-    if (df.grade[i] == 9)
-        indobs[i] = 0
-    else
-        indobs[i] = 1
-    end
+# Valid population hazard
+df = df[isfinite.(df.mort_h) .& (df.mort_h .> 0), :]
+
+# Follow-up in years. FU is in days: zero follow-up is set to half a day
+# instead of being dropped, so very early deaths stay in the data.
+println("Zero follow-up times: ", sum(df.FU .== 0))
+df.time = max.(Float64.(df.FU), 0.5) ./ 365.24
+
+# Sort by time
+sort!(df, :time)
+
+times  = Float64.(df.time)
+status = collect(Bool, df.status .== 1)
+hp     = Float64.(df.mort_h)
+n      = length(times)
+
+println("n = ", n, ", events = ", sum(status),
+        ", max follow-up = ", round(maximum(times), digits = 2), " years")
+freqtable(df.stage)
+
+# Check that follow-up is not heaped on a coarse grid (unlike breastla)
+println("Distinct follow-up times (days): ", length(unique(df.FU)))
+
+# Crude early excess hazard: (observed - expected deaths) / person-time,
+# using the population hazard at exit (rough; only to inform h0)
+for c in [30, 91, 182, 365] ./ 365.24
+    pt = min.(times, c)
+    d  = sum(status .& (times .<= c))
+    e  = sum(hp .* pt)
+    println("[0, ", round(c, digits = 3), "] years: observed ", d,
+            ", expected ", round(e, digits = 1),
+            ", crude excess hazard ", round((d - e) / sum(pt), digits = 4))
 end
-indobs = collect(Bool, (indobs))
-
-df = df[indobs,:]
-
-# Removing patients with infinite mortality hazard
-df = df[.!isinf.(df.mort_h), :]
-
-# Removing patients with na in mort_h
-df = df[.!isnan.(df.mort_h), :]
-
-# Removing patients with time equal to zero
-df = df[df.Time .> 0.0, :]
-
-# Sorting df by time
-sorted_indices = sortperm(df[:, :Time])
-
-df = df[sorted_indices,:]
-
-# Sample size
-n = size(df)[1]
-
-#= Vital status =#
-status = collect(Bool, (df.Status));
-
-#= grades matrix =#
-n = length(df.grade)
-k = 4  # number of categories (columns)
-grades = zeros(Float64, n, k)
-
-for i in 1:n
-    grades[i, Int(df.grade[i])] = 1.0
-end
-
-#= Survival times =#
-times = copy(df.Time);
-
-#= Population hazard =#
-hp = copy(df.mort_h);
-
 
 #=
 ****************************************************************************
-Fitting the model without covariates: MLE 
+Fitting the model without covariates: MLE
+Several starting values for each h0 (the likelihood can be multimodal or
+have ridges); the best fit for each h0 is kept.
 ****************************************************************************
 =#
 
-# Initial conditions on the natural scale
-h0q0  = [1.0e-3, 1.0e-6]
+q0      = 1.0e-6
+h0_grid = [1.0e-3, 1.0e-2, 1.0e-1, 0.3, 1.0]
 
-# Starting values for log(λ, κ, α, β): avoid all zeros (degenerate case)
-init0 = log.([0.1, 0.1, 0.1, 0.1])
+# Starting values for log(λ, κ, α, β)
+starts = [zeros(4),
+          log.([0.1, 0.1, 0.1, 0.1]),
+          log.([1.0, 0.1, 5.0, 2.0]),
+          log.([0.5, 1.0, 1.0, 1.0])]
 
-# MLE: no covariates
-optmle0 = EHRMLE(times, status, hp, h0q0, 10000, init0)
-LMLE0   = optmle0[1].minimizer
-Optim.converged(optmle0[1])
+results = DataFrame(h0 = Float64[], start = Int[], loglik = Float64[],
+                    converged = Bool[], logkappa = Float64[])
+best_fits = Dict{Float64, Any}()
 
+for h0 in h0_grid
+    best = nothing
+    for (j, s) in enumerate(starts)
+        f  = EHRMLE(times, status, hp, [h0, q0], 10000, s)
+        ll = -Optim.minimum(f[1])
+        push!(results, (h0, j, ll, Optim.converged(f[1]), f[1].minimizer[2]))
+        if best === nothing || ll > best.loglik
+            best = (fit = f, loglik = ll)
+        end
+    end
+    best_fits[h0] = best
+end
+
+show(results, allrows = true)
+
+# Large |log κ| suggests the optimiser is running along the κ → ∞ ridge
+for h0 in h0_grid
+    lk = best_fits[h0].fit[1].minimizer[2]
+    abs(lk) > 20 && @warn "h0 = $h0: log κ = $(round(lk, digits = 1)); possible ridge"
+end
+
+# Overall best
+h0_best = h0_grid[argmax([best_fits[h0].loglik for h0 in h0_grid])]
+LMLE0   = best_fits[h0_best].fit[1].minimizer
+println("\nBest h0 = ", h0_best, ", log-likelihood = ", best_fits[h0_best].loglik)
 
 #=
 ****************************************************************************
@@ -123,7 +125,7 @@ Fitted ODE solutions: checks
 =#
 
 # Solve the fitted model on a grid that is fine near t = 0 (log-spaced + linear)
-function solve_fit(par; h0q0 = h0q0, tmax = maximum(times), alg = Rodas5P())
+function solve_fit(par, h0q0; tmax = maximum(times), alg = Rodas5P())
     u0    = [log(h0q0[1]), log(h0q0[2]), 0.0]
     tgrid = sort(unique(vcat(0.0,
                              exp10.(range(-4, log10(tmax), length = 400)),
@@ -135,9 +137,6 @@ function solve_fit(par; h0q0 = h0q0, tmax = maximum(times), alg = Rodas5P())
             retcode = sol.retcode)
 end
 
-# Fits to compare (drop one if you only have a single fit)
-fits = [("start: zeros", fitA), ("start: init0", fitB)]
-
 p1 = plot(title = "Excess hazard", xlabel = "Time (years)", ylabel = "h_E(t)")
 p2 = plot(title = "Excess hazard (log–log)", xlabel = "Time (years)", ylabel = "h_E(t)",
           xscale = :log10, yscale = :log10)
@@ -145,12 +144,14 @@ p3 = plot(title = "Response (fraction of κ)", xlabel = "Time (years)", ylabel =
           xscale = :log10, yscale = :log10)
 p4 = plot(title = "Net survival", xlabel = "Time (years)", ylabel = "S_N(t)", ylim = (0, 1))
 
-for (lab, f) in fits
+for h0 in h0_grid
+    f   = best_fits[h0].fit
     par = f[1].minimizer
     λ, κ, α, μ = exp.(par)
     a   = α * κ
     reg = attractor(λ, κ, α, μ)
-    s   = solve_fit(par)
+    s   = solve_fit(par, [h0, q0])
+    lab = "h0 = $h0"
 
     println("\n", lab, "  (retcode: ", s.retcode, ")")
     println("  loglik      = ", f[2](par))
@@ -172,10 +173,8 @@ for (lab, f) in fits
     plot!(p4, s.t, exp.(-s.H), lw = 2, label = false)
 end
 
-# Observed event times, as a rug on the hazard panel
-vline!(p1, times[status], alpha = 0.03, color = :grey, label = false)
-
 plot(p1, p2, p3, p4, layout = (2, 2), size = (1000, 750), legend = :topright)
+
 
 #=
 ****************************************************************************
